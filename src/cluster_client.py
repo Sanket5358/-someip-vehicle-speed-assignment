@@ -2,6 +2,14 @@
 Virtual Instrument Cluster ECU.
 
 Consumes VehicleSpeedService.
+
+Methods:
+1. GetSpeed
+2. GetVehicleState
+
+Events:
+1. SpeedChanged
+2. OverspeedWarning
 """
 
 import asyncio
@@ -19,17 +27,25 @@ from someipy.someipy_logging import set_someipy_log_level
 from vehicle_speed_interface import (
     CONSUMER_PORT,
     GET_SPEED_METHOD_ID,
+    GET_VEHICLE_STATE_METHOD_ID,
     INSTANCE_ID,
     INTERFACE_IP,
+    MOVING,
+    OVERSPEED_EVENTGROUP_ID,
+    OVERSPEED_WARNING_EVENT_ID,
     SERVICE_ID,
+    SPEED_CHANGED_EVENT_ID,
+    STOPPED,
     SpeedPayload,
+    VehicleStatePayload,
     speed_eventgroup,
+    overspeed_eventgroup,
     vehicle_speed_service,
 )
 
 
 # ---------------------------------------------------------
-# SpeedChanged Event Callback
+# Event Callback
 # ---------------------------------------------------------
 
 def speed_event_callback(
@@ -38,23 +54,38 @@ def speed_event_callback(
 ) -> None:
 
     try:
-        speed_message = SpeedPayload().deserialize(
-            event_payload
-        )
 
-        print()
-        print("SpeedChanged notification received")
-        print(f"Event ID      : 0x{event_id:04X}")
-        print(f"Payload bytes : {event_payload.hex(' ')}")
-        print(
-            f"Vehicle speed : "
-            f"{speed_message.speed_kmph.value} km/h"
-        )
+        if event_id == SPEED_CHANGED_EVENT_ID:
+
+            speed_message = SpeedPayload().deserialize(
+                event_payload
+            )
+
+            print()
+            print("SpeedChanged notification received")
+            print(
+                f"Vehicle Speed : "
+                f"{speed_message.speed_kmph.value} km/h"
+            )
+
+        elif event_id == OVERSPEED_WARNING_EVENT_ID:
+
+            speed_message = SpeedPayload().deserialize(
+                event_payload
+            )
+
+            print()
+            print("=" * 45)
+            print("!!! OVERSPEED WARNING !!!")
+            print(
+                f"Vehicle Speed : "
+                f"{speed_message.speed_kmph.value} km/h"
+            )
+            print("=" * 45)
 
     except Exception as error:
-        print(
-            f"Could not decode event payload: {error}"
-        )
+
+        print(f"Could not decode event payload: {error}")
 
 
 # ---------------------------------------------------------
@@ -65,54 +96,97 @@ async def call_get_speed(
     client_instance: ClientServiceInstance,
 ) -> None:
 
+    try:
+
+        result = await client_instance.call_method(
+            GET_SPEED_METHOD_ID,
+            b"",
+        )
+
+        if result.message_type == MessageType.RESPONSE:
+
+            if result.return_code == ReturnCode.E_OK:
+
+                speed_message = SpeedPayload().deserialize(
+                    result.payload
+                )
+
+                print()
+                print("GetSpeed response received")
+                print(
+                    f"Vehicle Speed : "
+                    f"{speed_message.speed_kmph.value} km/h"
+                )
+
+        elif result.message_type == MessageType.ERROR:
+
+            print("GetSpeed returned SOME/IP error")
+
+    except Exception as error:
+
+        print(f"GetSpeed call failed: {error}")
+
+
+# ---------------------------------------------------------
+# GetVehicleState Method Call
+# ---------------------------------------------------------
+
+async def call_get_vehicle_state(
+    client_instance: ClientServiceInstance,
+) -> None:
+
+    try:
+
+        result = await client_instance.call_method(
+            GET_VEHICLE_STATE_METHOD_ID,
+            b"",
+        )
+
+        if result.message_type == MessageType.RESPONSE:
+
+            if result.return_code == ReturnCode.E_OK:
+
+                state_message = VehicleStatePayload().deserialize(
+                    result.payload
+                )
+
+                state_value = state_message.state.value
+
+                if state_value == STOPPED:
+                    state_name = "STOPPED"
+
+                elif state_value == MOVING:
+                    state_name = "MOVING"
+
+                else:
+                    state_name = "UNKNOWN"
+
+                print()
+                print("GetVehicleState response received")
+                print(f"Vehicle State : {state_name}")
+
+        elif result.message_type == MessageType.ERROR:
+
+            print("GetVehicleState returned SOME/IP error")
+
+    except Exception as error:
+
+        print(f"GetVehicleState call failed: {error}")
+
+
+# ---------------------------------------------------------
+# Periodic Vehicle Data Requests
+# ---------------------------------------------------------
+
+async def request_vehicle_data(
+    client_instance: ClientServiceInstance,
+) -> None:
+
     while True:
 
-        try:
-            print()
-            print("Calling GetSpeed...")
+        await call_get_speed(client_instance)
 
-            result = await client_instance.call_method(
-                GET_SPEED_METHOD_ID,
-                b"",
-            )
-
-            if result.message_type == MessageType.RESPONSE:
-
-                print("GetSpeed response received")
-
-                print(
-                    f"Return code   : {result.return_code}"
-                )
-
-                print(
-                    f"Payload bytes : "
-                    f"{result.payload.hex(' ')}"
-                )
-
-                if result.return_code == ReturnCode.E_OK:
-
-                    speed_message = (
-                        SpeedPayload().deserialize(
-                            result.payload
-                        )
-                    )
-
-                    print(
-                        f"Vehicle speed : "
-                        f"{speed_message.speed_kmph.value} km/h"
-                    )
-
-            elif result.message_type == MessageType.ERROR:
-
-                print(
-                    "Provider returned SOME/IP error"
-                )
-
-        except Exception as error:
-
-            print(
-                f"GetSpeed call failed: {error}"
-            )
+        await call_get_vehicle_state(client_instance)
 
         await asyncio.sleep(5)
 
@@ -130,20 +204,9 @@ async def main() -> None:
     print("VehicleSpeedService Consumer")
     print("=" * 60)
 
-    print(
-        f"Required Service ID  : "
-        f"0x{SERVICE_ID:04X}"
-    )
-
-    print(
-        f"Required Instance ID : "
-        f"0x{INSTANCE_ID:04X}"
-    )
-
-    print(
-        f"Consumer endpoint    : "
-        f"{INTERFACE_IP}:{CONSUMER_PORT}"
-    )
+    print(f"Service ID       : 0x{SERVICE_ID:04X}")
+    print(f"Instance ID      : 0x{INSTANCE_ID:04X}")
+    print(f"Consumer endpoint: {INTERFACE_IP}:{CONSUMER_PORT}")
 
     print("=" * 60)
 
@@ -171,16 +234,14 @@ async def main() -> None:
 
     while not await client_instance.is_available():
 
-        print(
-            "VehicleSpeedService is not yet available"
-        )
+        print("VehicleSpeedService is NOT AVAILABLE")
 
         await asyncio.sleep(1)
 
     print()
-    print("VehicleSpeedService is AVAILABLE")
+    print("VehicleSpeedService AVAILABLE")
 
-    # Subscribe to SpeedChanged event
+    # Subscribe to SpeedChanged event group
     print("Subscribing to SpeedChanged...")
 
     client_instance.subscribe_eventgroup(
@@ -188,14 +249,23 @@ async def main() -> None:
         5,
     )
 
-    print("Event-group subscription requested")
+    # Subscribe to OverspeedWarning event group
+    print("Subscribing to OverspeedWarning...")
 
-    # Start periodic GetSpeed requests
+    client_instance.subscribe_eventgroup(
+        overspeed_eventgroup,
+        5,
+    )
+
+    print("Both event-group subscription requests sent")
+
+    # Start periodic method requests
     method_task = asyncio.create_task(
-        call_get_speed(client_instance)
+        request_vehicle_data(client_instance)
     )
 
     try:
+
         await asyncio.Future()
 
     finally:
@@ -221,4 +291,5 @@ if __name__ == "__main__":
         asyncio.run(main())
 
     except KeyboardInterrupt:
+
         print("\nInstrument Cluster stopped")
